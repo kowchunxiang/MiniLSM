@@ -1,1190 +1,583 @@
-# \# MiniLSM
+# MiniLSM
 
-# 
+MiniLSM is a lightweight **LSM-tree inspired key-value storage engine** written in C++.
 
-# MiniLSM is a lightweight \*\*LSM-tree inspired key-value storage engine\*\* written in C++.
+The project demonstrates several fundamental concepts used in modern database systems, including **Write-Ahead Logging (WAL), MemTables, SSTables, tombstones, compaction, crash recovery, thread synchronization, and performance benchmarking**.
 
-# 
+This project is intended for educational purposes and for understanding how persistent key-value databases work internally.
 
-# The project demonstrates several fundamental concepts used in modern database systems, including \*\*Write-Ahead Logging (WAL), MemTables, SSTables, tombstones, compaction, crash recovery, thread synchronization, and performance benchmarking\*\*.
+---
 
-# 
+## Features
 
-# This project is intended for educational purposes and for understanding how persistent key-value databases work internally.
+MiniLSM currently supports:
 
-# 
+- `Put(key, value)` — insert or update a key-value pair
+- `Get(key)` — retrieve a value using a key
+- `Delete(key)` — logically delete a key using a tombstone
+- Write-Ahead Log (WAL)
+- Basic crash recovery
+- In-memory MemTable
+- SSTable persistence
+- Automatic MemTable flushing
+- Basic SSTable compaction
+- Tombstone removal during compaction
+- Thread synchronization using `std::mutex`
+- Put/Get performance benchmark
 
-# \---
+---
 
-# 
+## Architecture
 
-# \## Features
+The basic write flow is:
 
-# 
+```text
+Put(key, value)
+       |
+       v
+Write-Ahead Log
+       |
+       v
+MemTable
+       |
+       | MemTable reaches limit
+       v
+SSTable
+       |
+       | Multiple SSTables
+       v
+Compaction
+```
 
-# MiniLSM currently supports:
+The read flow is:
 
-# 
+```text
+Get(key)
+   |
+   v
+MemTable
+   |
+   | Not Found
+   v
+Newest SSTable
+   |
+   v
+Older SSTables
+```
 
-# \- `Put(key, value)` — insert or update a key-value pair
+---
 
-# \- `Get(key)` — retrieve a value using a key
+## How It Works
 
-# \- `Delete(key)` — logically delete a key using a tombstone
+### 1. Write-Ahead Log
 
-# \- Write-Ahead Log (WAL)
+Before a `Put` or `Delete` operation is stored in memory, the operation is written to:
 
-# \- Basic crash recovery
+```text
+mini_lsm.wal
+```
 
-# \- In-memory MemTable
+Example WAL entry for a Put operation:
 
-# \- SSTable persistence
+```text
+PUT
+key_1
+value_1
+```
 
-# \- Automatic MemTable flushing
+Example WAL entry for a Delete operation:
 
-# \- Basic SSTable compaction
+```text
+DELETE
+key_1
+```
 
-# \- Tombstone removal during compaction
+If the program restarts, MiniLSM reads the WAL and replays the recorded operations.
 
-# \- Thread synchronization using `std::mutex`
+This provides a simple form of crash recovery.
 
-# \- Put/Get performance benchmark
+---
 
-# 
+### 2. MemTable
 
-# \---
+Recent data is stored in memory using:
 
-# 
+```cpp
+std::map<std::string, std::string>
+```
 
-# \## Architecture
+The MemTable stores new and updated values before they are written to disk.
 
-# 
+The maximum MemTable size is currently:
 
-# The basic write flow is:
+```text
+10,000 records
+```
 
-# 
+When the MemTable reaches this limit, the data is flushed into an SSTable.
 
-# ```text
+---
 
-# Put(key, value)
+### 3. SSTable
 
-# &#x20;      |
+An SSTable is an immutable file used to store key-value data on disk.
 
-# &#x20;      v
+MiniLSM generates files such as:
 
-# Write-Ahead Log
+```text
+mini_lsm_0.sst
+mini_lsm_1.sst
+mini_lsm_2.sst
+...
+```
 
-# &#x20;      |
+Each entry is stored as:
 
-# &#x20;      v
+```text
+key
+value
+```
 
-# &#x20;   MemTable
+After the MemTable is successfully flushed:
 
-# &#x20;      |
+1. The SSTable is written to disk
+2. The MemTable is cleared
+3. The WAL is cleared
+4. A new WAL is opened
 
-# &#x20;      | MemTable reaches limit
+---
 
-# &#x20;      v
+### 4. Put
 
-# &#x20;   SSTable
+The `Put` operation performs the following steps:
 
-# &#x20;      |
+```text
+Put(key, value)
+      |
+      v
+Validate key
+      |
+      v
+Lock mutex
+      |
+      v
+Write operation to WAL
+      |
+      v
+Store value in MemTable
+      |
+      v
+Check MemTable size
+      |
+      v
+Flush to SSTable if necessary
+```
 
-# &#x20;      | Multiple SSTables
+Example:
 
-# &#x20;      v
+```cpp
+db.Put("name", "Alice");
+```
 
-# &#x20;  Compaction
+---
 
-# ```
+### 5. Get
 
-# 
+The `Get` operation first searches the in-memory MemTable.
 
-# The read flow is:
+If the key is not found there, MiniLSM searches SSTables from newest to oldest.
 
-# 
+This is important because newer SSTables may contain newer versions of the same key.
 
-# ```text
+Example:
 
-# Get(key)
+```cpp
+std::string value;
 
-# &#x20;  |
+Status status = db.Get("name", &value);
+```
 
-# &#x20;  v
+If the key exists:
 
-# MemTable
+```text
+value = Alice
+```
 
-# &#x20;  |
+If the key does not exist, MiniLSM returns:
 
-# &#x20;  | Not Found
+```text
+NotFound
+```
 
-# &#x20;  v
+---
 
-# Newest SSTable
+### 6. Delete
 
-# &#x20;  |
+MiniLSM uses a **tombstone** instead of immediately removing a key.
 
-# &#x20;  v
+The tombstone value is:
 
-# Older SSTables
+```text
+__TOMBSTONE__
+```
 
-# ```
+Example:
 
-# 
+```cpp
+db.Delete("name");
+```
 
-# \---
+Internally:
 
-# 
+```text
+name -> __TOMBSTONE__
+```
 
-# \## How It Works
+When `Get()` finds a tombstone, the key is treated as deleted.
 
-# 
+The tombstone can later be permanently removed during compaction.
 
-# \### 1. Write-Ahead Log
+---
 
-# 
+## Compaction
 
-# Before a `Put` or `Delete` operation is stored in memory, the operation is written to:
+When several SSTables have been created, MiniLSM performs compaction.
 
-# 
+During compaction, MiniLSM:
 
-# ```text
+- Reads existing SSTables
+- Keeps the newest version of each key
+- Removes older duplicate versions
+- Removes tombstones
+- Deletes old SSTable files
+- Creates a new merged SSTable
 
-# mini\_lsm.wal
+Conceptually:
 
-# ```
+```text
+SSTable 0
+    +
+SSTable 1
+    +
+SSTable 2
+    |
+    v
+Compaction
+    |
+    v
+Merged SSTable
+```
 
-# 
+Example:
 
-# Example WAL entry for a Put operation:
+Before compaction:
 
-# 
+```text
+SSTable 0:
+A -> 10
+B -> 20
 
-# ```text
+SSTable 1:
+A -> 30
+C -> 40
 
-# PUT
+SSTable 2:
+B -> __TOMBSTONE__
+```
 
-# key\_1
+After compaction:
 
-# value\_1
+```text
+A -> 30
+C -> 40
+```
 
-# ```
+The old value of `A` is removed and the deleted key `B` is permanently removed.
 
-# 
+---
 
-# Example WAL entry for a Delete operation:
+## Thread Safety
 
-# 
+MiniLSM uses:
 
-# ```text
+```cpp
+std::mutex
+```
 
-# DELETE
+and:
 
-# key\_1
+```cpp
+std::lock_guard<std::mutex>
+```
 
-# ```
+to protect shared in-memory data.
 
-# 
+This prevents multiple threads from modifying the MemTable at the same time during protected operations.
 
-# If the program restarts, MiniLSM reads the WAL and replays the recorded operations.
+---
 
-# 
+## Status Handling
 
-# This provides a simple form of crash recovery.
+The project contains a simple `Status` class for reporting operation results.
 
-# 
+Current status codes include:
 
-# \---
+```cpp
+kOk
+kNotFound
+kInvalidArgument
+```
 
-# 
+Examples:
 
-# \### 2. MemTable
+```cpp
+Status::OK();
+Status::NotFound();
+Status::InvalidArgument("key is empty");
+```
 
-# 
+---
 
-# Recent data is stored in memory using:
+## Crash Recovery
 
-# 
+When MiniLSM starts, it performs two recovery steps:
 
-# ```cpp
+```text
+Load SSTables
+      |
+      v
+Replay WAL
+      |
+      v
+Restore latest in-memory state
+```
 
-# std::map<std::string, std::string>
+The database first loads existing SSTable data and then replays operations recorded in the WAL.
 
-# ```
+This helps restore operations that were recorded but had not yet been flushed to an SSTable.
 
-# 
+---
 
-# The MemTable stores new and updated values before they are written to disk.
+## Benchmark
 
-# 
+The program contains a simple benchmark using:
 
-# The maximum MemTable size is currently:
+```text
+100,000 Put operations
+100,000 Get operations
+```
 
-# 
+The benchmark measures:
 
-# ```text
+- Total execution time
+- Queries Per Second (QPS)
 
-# 10,000 records
+QPS is calculated as:
 
-# ```
+```text
+QPS = Number of Operations / Execution Time
+```
 
-# 
+Example output:
 
-# When the MemTable reaches this limit, the data is flushed into an SSTable.
+```text
+--- MiniLSM Benchmark Start ---
 
-# 
+Put 100000 records: X seconds, QPS: XXXXX
 
-# \---
+Get 100000 records: X seconds, QPS: XXXXX
 
-# 
+--- Benchmark End ---
+```
 
-# \### 3. SSTable
+Actual performance depends on the computer, compiler, operating system, storage device, and existing database files.
 
-# 
+---
 
-# An SSTable is an immutable file used to store key-value data on disk.
+## Project Structure
 
-# 
+```text
+MiniLSM/
+├── mini_lsm.cpp
+├── README.md
+├── .gitignore
+└── .gitattributes
+```
 
-# MiniLSM generates files such as:
+When the program runs, additional files are generated automatically:
 
-# 
+```text
+mini_lsm.wal
+mini_lsm_0.sst
+mini_lsm_1.sst
+mini_lsm_2.sst
+...
+```
 
-# ```text
+These generated database files do not need to be uploaded to GitHub.
 
-# mini\_lsm\_0.sst
+---
 
-# mini\_lsm\_1.sst
+## Requirements
 
-# mini\_lsm\_2.sst
+A C++ compiler with C++17 support is recommended.
 
-# ...
+Examples:
 
-# ```
+- GCC / g++
+- MinGW-w64
+- Clang
+- Microsoft Visual C++
 
-# 
+---
 
-# Each entry is stored as:
+## Build
 
-# 
+Using g++:
 
-# ```text
+```bash
+g++ -std=c++17 -O2 -pthread mini_lsm.cpp -o mini_lsm
+```
 
-# key
+---
 
-# value
+## Run
 
-# ```
+### Linux / macOS
 
-# 
+```bash
+./mini_lsm
+```
 
-# After the MemTable is successfully flushed:
+### Windows
 
-# 
+```bash
+mini_lsm.exe
+```
 
-# 1\. The SSTable is written to disk
+---
 
-# 2\. The MemTable is cleared
+## Example Usage
 
-# 3\. The WAL is cleared
+```cpp
+DB db;
 
-# 4\. A new WAL is opened
+db.Put("username", "ChunXiang");
 
-# 
+std::string value;
 
-# \---
+Status status = db.Get("username", &value);
 
-# 
+if (status.ok()) {
+    std::cout << value << std::endl;
+}
 
-# \### 4. Put
+db.Delete("username");
+```
 
-# 
+---
 
-# The `Put` operation performs the following steps:
+## Concepts Demonstrated
 
-# 
+This project demonstrates several database and systems programming concepts:
 
-# ```text
+- C++
+- Object-Oriented Programming
+- Key-value databases
+- LSM-tree architecture
+- MemTables
+- SSTables
+- Write-Ahead Logging
+- Crash recovery
+- Tombstones
+- Compaction
+- File I/O
+- Persistent storage
+- Mutex-based synchronization
+- Performance benchmarking
+- Queries Per Second (QPS)
 
-# Put(key, value)
+---
 
-# &#x20;     |
+## Limitations
 
-# &#x20;     v
+MiniLSM is an educational implementation and is **not intended for production use**.
 
-# Validate key
+Current limitations include:
 
-# &#x20;     |
+- Sequential SSTable lookup
+- Simple text-based SSTable format
+- Basic WAL format
+- Basic recovery logic
+- Basic compaction strategy
+- No Bloom filters
+- No SSTable index
+- No block cache
+- No checksums
+- No background compaction
+- Limited concurrency
+- No transaction support
 
-# &#x20;     v
+---
 
-# Lock mutex
+## Future Improvements
 
-# &#x20;     |
+Possible future improvements include:
 
-# &#x20;     v
+- Bloom filters
+- SSTable indexing
+- Binary SSTable format
+- Block cache
+- Checksums
+- Improved WAL durability
+- Background flushing
+- Background compaction
+- Leveled compaction
+- Configurable MemTable size
+- Better SSTable file management
+- Concurrent reads and writes
+- Range queries
+- Iterator support
+- Performance profiling
+- Automated unit testing
+- Benchmark comparison with LevelDB or RocksDB
 
-# Write operation to WAL
+---
 
-# &#x20;     |
+## Technologies
 
-# &#x20;     v
+- C++
+- C++ Standard Library
+- STL `std::map`
+- STL `std::mutex`
+- File I/O
+- C++ Chrono
+- g++
 
-# Store value in MemTable
+---
 
-# &#x20;     |
+## Why I Built This
 
-# &#x20;     v
+The goal of this project is to understand how a persistent storage engine works internally instead of treating a database as a black box.
 
-# Check MemTable size
+By implementing a simplified LSM-tree storage engine from scratch, this project explores how databases:
 
-# &#x20;     |
+- accept writes
+- store data in memory
+- persist data to disk
+- recover after restarting
+- handle deleted data
+- merge old data
+- retrieve stored values
+- measure storage-engine performance
 
-# &#x20;     v
+The project is inspired by storage-engine concepts used in systems such as **LevelDB** and **RocksDB**, while intentionally keeping the implementation small enough for learning and experimentation.
 
-# Flush to SSTable if necessary
+---
 
-# ```
+## Author
 
-# 
+**Kow Chun Xiang**
 
-# Example:
-
-# 
-
-# ```cpp
-
-# db.Put("name", "Alice");
-
-# ```
-
-# 
-
-# \---
-
-# 
-
-# \### 5. Get
-
-# 
-
-# The `Get` operation first searches the in-memory MemTable.
-
-# 
-
-# If the key is not found there, MiniLSM searches SSTables from newest to oldest.
-
-# 
-
-# This is important because newer SSTables may contain newer versions of the same key.
-
-# 
-
-# Example:
-
-# 
-
-# ```cpp
-
-# std::string value;
-
-# 
-
-# Status status = db.Get("name", \&value);
-
-# ```
-
-# 
-
-# If the key exists:
-
-# 
-
-# ```text
-
-# value = Alice
-
-# ```
-
-# 
-
-# If the key does not exist, MiniLSM returns:
-
-# 
-
-# ```text
-
-# NotFound
-
-# ```
-
-# 
-
-# \---
-
-# 
-
-# \### 6. Delete
-
-# 
-
-# MiniLSM uses a \*\*tombstone\*\* instead of immediately removing a key.
-
-# 
-
-# The tombstone value is:
-
-# 
-
-# ```text
-
-# \_\_TOMBSTONE\_\_
-
-# ```
-
-# 
-
-# For example:
-
-# 
-
-# ```cpp
-
-# db.Delete("name");
-
-# ```
-
-# 
-
-# Internally:
-
-# 
-
-# ```text
-
-# name -> \_\_TOMBSTONE\_\_
-
-# ```
-
-# 
-
-# When `Get()` finds a tombstone, the key is treated as deleted.
-
-# 
-
-# The tombstone can later be permanently removed during compaction.
-
-# 
-
-# \---
-
-# 
-
-# \## Compaction
-
-# 
-
-# When several SSTables have been created, MiniLSM performs compaction.
-
-# 
-
-# The current implementation starts compaction when the SSTable counter reaches the configured threshold.
-
-# 
-
-# During compaction, MiniLSM:
-
-# 
-
-# \- Reads existing SSTables
-
-# \- Keeps the newest version of each key
-
-# \- Removes older duplicate versions
-
-# \- Removes tombstones
-
-# \- Deletes old SSTable files
-
-# \- Creates a new merged SSTable
-
-# 
-
-# Conceptually:
-
-# 
-
-# ```text
-
-# SSTable 0
-
-# &#x20;   +
-
-# SSTable 1
-
-# &#x20;   +
-
-# SSTable 2
-
-# &#x20;   |
-
-# &#x20;   v
-
-# &#x20;Compaction
-
-# &#x20;   |
-
-# &#x20;   v
-
-# Merged SSTable
-
-# ```
-
-# 
-
-# Example:
-
-# 
-
-# Before compaction:
-
-# 
-
-# ```text
-
-# SSTable 0:
-
-# A -> 10
-
-# B -> 20
-
-# 
-
-# SSTable 1:
-
-# A -> 30
-
-# C -> 40
-
-# 
-
-# SSTable 2:
-
-# B -> \_\_TOMBSTONE\_\_
-
-# ```
-
-# 
-
-# After compaction:
-
-# 
-
-# ```text
-
-# A -> 30
-
-# C -> 40
-
-# ```
-
-# 
-
-# The old value of `A` is removed and the deleted key `B` is permanently removed.
-
-# 
-
-# \---
-
-# 
-
-# \## Thread Safety
-
-# 
-
-# MiniLSM uses:
-
-# 
-
-# ```cpp
-
-# std::mutex
-
-# ```
-
-# 
-
-# and:
-
-# 
-
-# ```cpp
-
-# std::lock\_guard<std::mutex>
-
-# ```
-
-# 
-
-# to protect shared in-memory data.
-
-# 
-
-# This prevents multiple threads from modifying the MemTable at the same time during protected operations.
-
-# 
-
-# \---
-
-# 
-
-# \## Status Handling
-
-# 
-
-# The project contains a simple `Status` class for reporting operation results.
-
-# 
-
-# Current status codes include:
-
-# 
-
-# ```cpp
-
-# kOk
-
-# kNotFound
-
-# kInvalidArgument
-
-# ```
-
-# 
-
-# Examples:
-
-# 
-
-# ```cpp
-
-# Status::OK();
-
-# Status::NotFound();
-
-# Status::InvalidArgument("key is empty");
-
-# ```
-
-# 
-
-# This provides a cleaner way to report database operation results.
-
-# 
-
-# \---
-
-# 
-
-# \## Crash Recovery
-
-# 
-
-# When MiniLSM starts, it performs two recovery steps:
-
-# 
-
-# ```text
-
-# Load SSTables
-
-# &#x20;     |
-
-# &#x20;     v
-
-# Replay WAL
-
-# &#x20;     |
-
-# &#x20;     v
-
-# Restore latest in-memory state
-
-# ```
-
-# 
-
-# The database first loads existing SSTable data and then replays operations recorded in the WAL.
-
-# 
-
-# This helps restore operations that were recorded but had not yet been flushed to an SSTable.
-
-# 
-
-# \---
-
-# 
-
-# \## Benchmark
-
-# 
-
-# The program contains a simple benchmark using:
-
-# 
-
-# ```text
-
-# 100,000 Put operations
-
-# 100,000 Get operations
-
-# ```
-
-# 
-
-# The benchmark measures:
-
-# 
-
-# \- Total execution time
-
-# \- Queries Per Second (QPS)
-
-# 
-
-# QPS is calculated as:
-
-# 
-
-# ```text
-
-# QPS = Number of Operations / Execution Time
-
-# ```
-
-# 
-
-# Example output:
-
-# 
-
-# ```text
-
-# \--- MiniLSM Benchmark Start ---
-
-# 
-
-# Put 100000 records: 2.45 seconds, QPS: 40816.3
-
-# 
-
-# Get 100000 records: 1.20 seconds, QPS: 83333.3
-
-# 
-
-# \--- Benchmark End ---
-
-# ```
-
-# 
-
-# Actual performance depends on the computer, compiler, operating system, storage device, and existing database files.
-
-# 
-
-# \---
-
-# 
-
-# \## Project Structure
-
-# 
-
-# ```text
-
-# MiniLSM/
-
-# │
-
-# ├── mini\_lsm.cpp
-
-# ├── README.md
-
-# ├── .gitignore
-
-# └── .gitattributes
-
-# ```
-
-# 
-
-# When the program runs, additional files are generated automatically:
-
-# 
-
-# ```text
-
-# mini\_lsm.wal
-
-# mini\_lsm\_0.sst
-
-# mini\_lsm\_1.sst
-
-# mini\_lsm\_2.sst
-
-# ...
-
-# ```
-
-# 
-
-# These generated database files do not need to be uploaded to GitHub.
-
-# 
-
-# \---
-
-# 
-
-# \## Requirements
-
-# 
-
-# A C++ compiler with C++17 support is recommended.
-
-# 
-
-# Examples:
-
-# 
-
-# \- GCC / g++
-
-# \- MinGW-w64
-
-# \- Clang
-
-# \- Microsoft Visual C++
-
-# 
-
-# \---
-
-# 
-
-# \## Build
-
-# 
-
-# Using g++:
-
-# 
-
-# ```bash
-
-# g++ -std=c++17 -O2 -pthread mini\_lsm.cpp -o mini\_lsm
-
-# ```
-
-# 
-
-# \---
-
-# 
-
-# \## Run
-
-# 
-
-# \### Linux / macOS
-
-# 
-
-# ```bash
-
-# ./mini\_lsm
-
-# ```
-
-# 
-
-# \### Windows
-
-# 
-
-# ```bash
-
-# mini\_lsm.exe
-
-# ```
-
-# 
-
-# \---
-
-# 
-
-# \## Example Usage
-
-# 
-
-# A simple example using the database:
-
-# 
-
-# ```cpp
-
-# DB db;
-
-# 
-
-# db.Put("username", "ChunXiang");
-
-# 
-
-# std::string value;
-
-# 
-
-# Status status = db.Get("username", \&value);
-
-# 
-
-# if (status.ok()) {
-
-# &#x20;   std::cout << value << std::endl;
-
-# }
-
-# 
-
-# db.Delete("username");
-
-# ```
-
-# 
-
-# \---
-
-# 
-
-# \## Concepts Demonstrated
-
-# 
-
-# This project demonstrates several database and systems programming concepts:
-
-# 
-
-# \- C++
-
-# \- Object-Oriented Programming
-
-# \- Key-value databases
-
-# \- LSM-tree architecture
-
-# \- MemTables
-
-# \- SSTables
-
-# \- Write-Ahead Logging
-
-# \- Crash recovery
-
-# \- Tombstones
-
-# \- Compaction
-
-# \- File I/O
-
-# \- Persistent storage
-
-# \- Mutex-based synchronization
-
-# \- Performance benchmarking
-
-# \- Queries Per Second (QPS)
-
-# 
-
-# \---
-
-# 
-
-# \## Limitations
-
-# 
-
-# MiniLSM is an educational implementation and is \*\*not intended for production use\*\*.
-
-# 
-
-# The current implementation is simplified and does not include many features used by production database systems.
-
-# 
-
-# Current limitations include:
-
-# 
-
-# \- Sequential SSTable lookup
-
-# \- Simple text-based SSTable format
-
-# \- Basic WAL format
-
-# \- Basic recovery logic
-
-# \- Basic compaction strategy
-
-# \- No Bloom filters
-
-# \- No SSTable index
-
-# \- No block cache
-
-# \- No checksums
-
-# \- No background compaction
-
-# \- Limited concurrency
-
-# \- No advanced transaction support
-
-# \- No advanced corruption handling
-
-# 
-
-# \---
-
-# 
-
-# \## Future Improvements
-
-# 
-
-# Possible future improvements include:
-
-# 
-
-# \- Bloom filters
-
-# \- SSTable indexing
-
-# \- Binary SSTable format
-
-# \- Block-based storage
-
-# \- Block cache
-
-# \- Checksums
-
-# \- Improved WAL durability
-
-# \- Background flushing
-
-# \- Background compaction
-
-# \- Leveled compaction
-
-# \- Size-tiered compaction
-
-# \- Configurable MemTable size
-
-# \- Better SSTable file management
-
-# \- Concurrent reads and writes
-
-# \- Range queries
-
-# \- Iterator support
-
-# \- Performance profiling
-
-# \- Automated unit testing
-
-# \- Benchmark comparison with LevelDB or RocksDB
-
-# 
-
-# \---
-
-# 
-
-# \## Technologies
-
-# 
-
-# \- C++
-
-# \- C++ Standard Library
-
-# \- STL `std::map`
-
-# \- STL `std::mutex`
-
-# \- File I/O
-
-# \- C++ Chrono
-
-# \- g++
-
-# 
-
-# \---
-
-# 
-
-# \## Why I Built This
-
-# 
-
-# The goal of this project is to understand how a persistent storage engine works internally instead of treating a database as a black box.
-
-# 
-
-# By implementing a simplified LSM-tree storage engine from scratch, this project explores how databases:
-
-# 
-
-# \- accept writes
-
-# \- store data in memory
-
-# \- persist data to disk
-
-# \- recover after restarting
-
-# \- handle deleted data
-
-# \- merge old data
-
-# \- retrieve stored values
-
-# \- measure storage-engine performance
-
-# 
-
-# The project is inspired by storage-engine concepts used in systems such as \*\*LevelDB\*\* and \*\*RocksDB\*\*, while intentionally keeping the implementation small enough for learning and experimentation.
-
-# 
-
-# \---
-
-# 
-
-# \## Author
-
-# 
-
-# \*\*Kow Chun Xiang\*\*
-
-# 
-
-# BSc Mathematics \& Applied Mathematics (Honours)  
-
-# Xiamen University Malaysia
-
+BSc Mathematics & Applied Mathematics (Honours)  
+Xiamen University Malaysia
